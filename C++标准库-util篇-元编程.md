@@ -8,7 +8,7 @@
 
 ## 元程序与常量
 
-元程序只能操纵那些在编译期就板上钉钉的物件，不能像普通的程序那样随意玩弄变量、发起函数调用。C++的元程序借用模板和常量（众所周知，C++的`const`不是真const，`constexpr`才是const）完成各种元函数的编写（语言体态生呈现为类模板），本质上做的事儿是编译期类型的计算，而非运行时值的计算。
+元程序只能操纵那些在编译期就板上钉钉的物件，不能像普通的程序那样随意玩弄变量、发起函数调用。C++的元程序借用模板和常量（众所周知，C++的`const`不是真const，`constexpr`才是const）完成各种元函数的编写（语言体态上大部分呈现为类模板），本质上做的事儿是编译期类型的计算，而非运行时值的计算。
 
 我们知道，C++的编译期常量可以通过`constexpr`来定义：
 
@@ -56,7 +56,9 @@ int main(){
 }
 ```
 
+这里`fibonacci<5>`实际上在编译期就已经算好了。
 
+> 这让我不禁想起了OI里用模板元作弊的那些骚操作。。。
 
 ### `integral_constant`
 
@@ -89,7 +91,13 @@ int main(){
     };
 ```
 
-这里面涉及了元编程中一个非常重要的技巧——"**trait**"，"**trait**"直译为"**特质**"，它用来在编译期取得某种类型信息，再根据这些信息依赖特化与SFINAE去进行元函数分支、循环结构的编译期选择。**"trait"**由于其发音和功效，中译一般称其为**“萃取”**，这一意译可谓惟妙惟肖。
+在注释的使用说明中提到了元编程中一个非常重要的技巧——"**trait**"，"**trait**"直译为"**特质**"（大抵就是形容某种物件的逼格），它用来在编译期取得某种类型信息。Trait在标准库中大量使用，诸如iterator trait、char trait、type trait等。trait"**由于其发音和功效，中译一般称其为**“特性萃取”**，这一意译可谓惟妙惟肖。
+
+> Bjarne Stroustrup对Trait的解释：
+>
+> > Think of a trait as a small object whose main purpose is to carry information used by another object or algorithm to determine *policy* or *implementation* details.
+> >
+> > Trait是种小对象，它的主要目的就是携带被另一个对象或算法所使用的信息，以确定某个policy或是implementation的细节。
 
 > 是不是现在根本理解不了trait在干啥？这就对了，继续往后看。
 
