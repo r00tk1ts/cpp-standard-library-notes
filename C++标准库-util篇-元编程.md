@@ -289,3 +289,87 @@ struct enable_if<true, T> { typedef T type; };
 
 > SFINAE是模板元编程的基础，想往下看，这个必须得先搞懂。
 
+C++14后，标准库自己定义了别名模板，来简化`::type`的写法：
+
+```cpp
+template< bool B, class T = void >
+using enable_if_t = typename enable_if<B,T>::type;
+```
+
+> C++14为标准库很多trait都做了别名模板来简化书写，它们都以trait加后缀`_t`来命名。其实相对value还有个`_v`
+
+关于`enable_if`用途，手册里给了一个很经典的正确和错误的例子，以加深印象：
+
+```cpp
+/* WRONG */
+ 
+struct T {
+    enum { int_t, float_t } type;
+    template <typename Integer,
+              typename = std::enable_if_t<std::is_integral<Integer>::value>
+    >
+    T(Integer) : type(int_t) {}
+ 
+    template <typename Floating,
+              typename = std::enable_if_t<std::is_floating_point<Floating>::value>
+    >
+    T(Floating) : type(float_t) {} // error: treated as redefinition
+};
+ 
+/* RIGHT */
+ 
+struct T {
+    enum { int_t, float_t } type;
+    template <typename Integer,
+              std::enable_if_t<std::is_integral<Integer>::value, bool> = true
+    >
+    T(Integer) : type(int_t) {}
+ 
+    template <typename Floating,
+              std::enable_if_t<std::is_floating_point<Floating>::value, bool> = true
+    >
+    T(Floating) : type(float_t) {} // OK
+};
+```
+
+这里先别管`std::is_integral<Integer>::value`或是`std::is_floating_point<Floating>::value`，它们的实现我们后面会讲，总之二者都会在编译期返回一个bool值（要么是`false`，要么是`true`）。
+
+在编译期处理时，如果拿到的值是`false`，那么由于`::type`不存在，就会触发SFINAE而从候选集中被丢弃。然而，SFINAE这东西理解起来不难，想要用对还是需要经验。这不，上面手册中的例子就是一个标准的错误用法。
+
+上例中的前者，两个构造器之所以被编译器视为重复定义，是因为这两个函数模板从编译器的视角来看是完全等同的(equivalence)，编译器根本不care默认模板实参，`Integer`和`Floating`仅仅是名字不同，本质上都是一个类型参数而已。因此，在编译器眼里，两个重载的构造器都是`template<typename P, typename>T(P)`，你甚至都没走到SFINAE这一步呢，编译期就已经认为这是个重定义给你打回来了。
+
+至于后者就不一样了，这里换成了非类型模板参数，对于两个构造器来说，有且仅有其中的一个可以成为正当候选（对整型来说就是前者，对浮点型来说是后者），因为另一个总会被SFINAE干掉：
+
+```cpp
+// 对int来说，能成功实例化的只有这一个候选
+template<typename int, bool anonymous=true>
+T(int) : type(int_t) {}
+
+// 对float来说，能成功实例化的只有这一个候选
+template<typename float, bool anonymous=true>
+T(float) : type(float_t) {}
+```
+
+至于匿名的第二模板参数，它的作用只是为了通过`enable_if`来做出分支选择，利用SFINAE丢弃错误的“重载”，它的值是什么其实无关紧要，你给`false`也行，它甚至连名字都没有，因为构造函数内部根本用不到这个东西，它的使命只是为了在编译期做分支选择，找到那个最合适的候选人。此外，为啥这里非要给个默认实参呢，这个其实道理就更简单了，因为首先这个东西无法在调用处自动推导，这就意味着需要程序员自己去写`T<float, true>`，这不仅显得多余，还浪费了第一个模板实参`float`的自动推导。因此，我们给它随便设个默认值就行了。
+
+对于初学者来说，经常会把另外的一个例子和上面这个搞混：
+
+```cpp
+// primary template
+template<typename P, typename Enable = void>
+class T{};	
+
+// partial specialization of T
+template<typename P>
+class T<P, std::enable_if_t<std::is_floating_point<P>::value>> {};
+```
+
+像上面的这种是完全可以的，因为下面是对主模板的偏特化，并不是重新定义，偏特化的模板相比主模板更加的特殊，所以一旦参数匹配，它会优先成为候选实例化：
+
+```cpp
+T<int>{};		// matches the primary template
+T<double>{};	// matches the partial specialization
+```
+
+
+
