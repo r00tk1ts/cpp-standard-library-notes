@@ -422,3 +422,56 @@ inline constexpr bool is_same_v = is_same<T, U>::value;
 constexpr bool a = is_same_v<int, int32_t>;	// true
 ```
 
+#### `is_integral`
+
+该trait用于判断模板参数类型是否为整型：
+
+```cpp
+template< class T >
+struct is_integral;
+```
+
+这个东西实现起来其实也很简单，只需要我们枚举基础类型中所有的整型类型，对他们进行特化并继承`true_type`即可，而主模板直接继承`false_type`。原理上非常简单，但是实现起来颇具篇幅。
+
+我们看一下libstdc++的实现：
+
+```cpp
+template<typename _Tp>
+struct is_integral : public __is_integral_helper<__remove_cv_t<_Tp>>::type {};
+```
+
+`__remove_cv_t`用于移除模板参数的CV修饰符（常见的type modification，洗掉CV），由于标准没有把`_t`的别名模板标准化，所以用得是内置的命名法（估计是委员会忘了），实际上本体是`typename remove_cv<_Tp>::type`，这一部分后面会讲到。这里通过继承内部的`__is_integral_helper`又包了一层，因此`__is_integral_helper`才是本体，我们拆开看看：
+
+```cpp
+// 主模板果然如此
+template<typename>
+struct __is_integral_helper : public false_type {};
+
+// 剩下的都是特化
+template<>
+struct __is_integral_helper<bool> : public true_type {};
+
+template<>
+struct __is_integral_helper<char> : public true_type {};
+
+template<>
+struct __is_integral_helper<signed char> : public true_type {};
+
+template<>
+struct __is_integral_helper<unsigned char> : public true_type {};
+
+template<>
+struct __is_integral_helper<short> : public true_type {};
+
+template<>
+struct __is_integral_helper<unsigned short> : public true_type {};
+
+template<>
+struct __is_integral_helper<int> : public true_type {};
+
+template<>
+struct __is_integral_helper<unsigned int> : public true_type {};
+
+// 略...
+```
+
