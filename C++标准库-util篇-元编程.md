@@ -8,7 +8,7 @@
 
 ## 元程序与常量
 
-元程序只能操纵那些在编译期就板上钉钉的物件，不能像普通的程序那样随意玩弄变量、发起函数调用。C++的元程序借用模板和常量（众所周知，C++的`const`不是真const，`constexpr`才是const）完成各种元函数的编写（语言体态上大部分呈现为类模板），本质上做的事儿是编译期类型的计算，而非运行时值的计算。
+元程序只能操纵那些在编译期就板上钉钉的物件，不能像普通的程序那样随意玩弄变量、发起函数调用。C++的元程序借用模板、常量（众所周知，C++的`const`不是真const，`constexpr`才是const）和各种关键字(`sizeof`,`decltype`啥的)完成各种元函数的编写（语言体态上大部分呈现为类模板），本质上做的事儿是编译期类型的计算，而非运行时值的计算。
 
 我们知道，C++的编译期常量可以通过`constexpr`来定义：
 
@@ -39,7 +39,7 @@ struct fibonacci {
     static constexpr int value = fibonacci<N-1>::value + fibonacci<N-2>::value;
 };
 
-// 递归的终止条件
+// 利用特化来处理递归的终止条件
 template<>
 struct fibonacci<1> {
    static constexpr int value = 1;
@@ -60,7 +60,9 @@ int main(){
 
 > 这让我不禁想起了OI里用模板元作弊的那些骚操作。。。
 
-### `integral_constant`
+这里的元程序就是借助了C++的模板来实现，`fibonacci`从语言上来看是个类模板，但是在元编程的世界里它是个元函数，模板参数`N`是它的调用参数，与运行时普通的函数调用不同，在元函数里，无论是“实参”还是“形参”它们都是统一的，并且在编译期就已经确定了。
+
+## `integral_constant`
 
 而在元编程中，仅仅使用编译期常量是不够的，很多场合，我们需要一个能够把具体的某个常量值视为某种独特的类型的转换器，而从C++11开始，标准库为我们定义了`integral_constant`完成了这种转换：
 
@@ -91,7 +93,7 @@ int main(){
     };
 ```
 
-在注释的使用说明中提到了元编程中一个非常重要的技巧——"**trait**"，"**trait**"直译为"**特质**"（大抵就是形容某种物件的逼格），它用来在编译期取得某种类型信息。Trait在标准库中大量使用，诸如iterator trait、char trait、type trait等。trait"**由于其发音和功效，中译一般称其为**“特性萃取”**，这一意译可谓惟妙惟肖。
+在注释的使用说明中提到了元编程中一个非常重要的技巧——"**trait**"，"**trait**"直译为"**特质**"（大抵就是形容某种物件的逼格），它用来在编译期取得某种类型信息。Trait在标准库中大量使用，诸如iterator trait（这东西用于桥接容器和算法，毕竟算法内部不知道传进来的是啥子东西，就只能定义一套接口，即iterator来统一操纵，trait负责获取）、char trait（处理不同字符类型，`basic_string`里满地都是）、type trait（C++11之后不断丰富，抄，就硬抄）等。**"trait"**由于其发音和功效，中译一般称其为**“特性萃取”**，这一意译可谓惟妙惟肖。
 
 > Bjarne Stroustrup对Trait的解释：
 >
@@ -138,10 +140,152 @@ using true_type = integral_constant<bool, true>;
 using false_type = integral_constant<bool, false>;
 ```
 
-C++17还补充定义了更泛用的别名模板：
+C++17还补充定义了更泛用的别名模板并对外曝光（实际上C++11时就有了`__bool_constant`，但这双下划线开头的懂得都懂，C++17标准才让这个东西名正言顺）：
 
 ```cpp
   template<bool __v>
   	using bool_constant = integral_constant<bool, __v>;
 ```
+
+这里有人就会问了：bool类型一共不就`true`和`false`两个值吗，定义`true_type`和`false_type`完全够了啊，非要曝光出去这个`bool_constant`干啥？
+
+实际上，我们写元程序时，很多情况都是要依赖于元程序的调用参数来确定`__v`具体是个啥东西，并不是直接传一个`true`或`false`的参数进来（比如`bool_constant<sizeof(xxx) == 1>`，时刻铭记：这里的判断在编译期就确定了）。
+
+## Type traits
+
+C++11标准化的Type traits（中译一般称作**“型别萃取”**，直译的叫**“类型特性”**）大幅度降低了模板元编程的上手门槛。我们前面讲到的`integral_constant`本身不属于type trait，但是它会为各种type trait所用。千言万语，究竟何为Type Traits呢？手册是如下定义的：
+
+```cpp
+Type traits defines a compile-time template-based interface to query or modify the properties of types.
+```
+
+翻译一下就是在编译期基于模板去查询或修改类型的属性。嗯，这依然是一句黑话，讳莫如深，我们看看它都给了哪些元函数，又分别能做什么。
+
+**Type properties**
+
+| Categories           | Traits                                                       |
+| -------------------- | ------------------------------------------------------------ |
+| Primary type         | `is_void`,`is_null_pointer`,`is_integral`,`is_floating_point`,`is_array`,`is_enum`,`is_union`,`is_class`,`is_function`,`is_pointer`,`is_lvalue_reference`,`is_rvalue_reference`,`is_member_object_pointer`,`is_member_function_pointer` |
+| Composite type       | `is_fundamental`,`is_arithmetic`,`is_scalar`,`is_object`,`is_compound`,`is_reference`,`is_member_pointer` |
+| Type properties      | `is_const`,`is_volatile`,`is_trivial`,`is_trivially_copyable`,`is_standard_layout`,`is_pod`... |
+| Supported operations | `is_constructible`,`is_default_constructible`,`is_copy_constructible`,`is_assignable`... |
+| Property queries     | `alignment_of`,`rank`,`extent`                               |
+| Type relationships   | `is_same`,`is_base_of`,`is_convertible`...                   |
+
+**Type modifications**
+
+| Categories                  | Traits                                                       |
+| --------------------------- | ------------------------------------------------------------ |
+| Const-volatility specifiers | `remove_cv`,`remove_const`,`remove_volatile`,`add_cv`,`add_const`,`add_volatile` |
+| References                  | `remove_reference`,`add_lvalue_reference`,`add_rvalue_reference` |
+| Pointers                    | `remove_pointer`,`add_pointer`                               |
+| Sign modifiers              | `make_signed`,`make_unsigned`                                |
+| Arrays                      | `remove_extent`,`remove_all_extents`                         |
+
+**Miscellaneous transformations**
+
+`aligned_storage`,`aligned_union`,`decay`,`remove_cvref`,`enable_if`,`conditional`,`common_type`,`common_reference`,`underlying_type`,`result_of`,`invoke_result`,`void_t`,`type_identity`
+
+**Operations on traits**
+
+`conjunction`,`disjunction`,`negation`
+
+**Helper classes**
+
+`integral_constant`,`bool_constant`,`true_type`,`false_type`
+
+可以看到**Type properties**提供了可供查询的属性，而**Type modifications**则会修改属性，它们分门别类，各有各的妙用，除此之外，还有杂项转换type trait（诸如`enable_if`,`conditonal`这些都可以叫做**helper types**）以及C++17引入的逻辑与或非操作。
+
+而最后的Helper classes大家已经熟悉了，它作为基石游走在各种type trait之间，完成编译期就能处理的骚操作。
+
+### Miscellaneous transformations
+
+挑选几个颇为有用的trait，并详述一下它的设计和使用。
+
+#### `conditional`
+
+先来了解一下`std::conditional`，这东西大家应该都很熟悉，我们先看看[手册](https://en.cppreference.com/w/cpp/types/conditional)对它的解释：
+
+```cpp
+template< bool B, class T, class F >
+struct conditional;
+```
+
+> Provides member typedef `type`, which is defined as `T` if `B` is true at compile time, or as `F` if `B` is false.
+>
+> The behavior of a program that adds specializations for `conditional` is undefined.
+
+举个例子：
+
+```cpp
+// Type1会在编译期确定，其类型为double，因为B是false
+// 同理Type2是int
+typedef std::conditional<sizeof(int) >= sizeof(double), int, double>::type Type1;
+typedef std::conditional<sizeof(int) <= sizeof(double), int, double>::type Type2;
+```
+
+是否看这个`::type`非常眼熟，别急，我们先看看手册里给出的一个可行的实现方案：
+
+```cpp
+// 用不到的模板参数可以省略name
+// 主模板处理B为true的情景
+template<bool, class T, class>
+struct conditional {
+    typedef T type;
+};
+
+// 利用偏特化处理B为false的情景
+template<class T, class F>
+struct conditional<false, T, F> {
+    typedef F type;
+}
+```
+
+实际上这就是libstdc++的实现，只是代码风格更glibc一点：
+
+```cpp
+// Primary template.
+  /// Define a member typedef @c type to one of two argument types.
+  template<bool _Cond, typename _Iftrue, typename _Iffalse>
+    struct conditional
+    { typedef _Iftrue type; };
+
+  // Partial specialization for false.
+  template<typename _Iftrue, typename _Iffalse>
+    struct conditional<false, _Iftrue, _Iffalse>
+    { typedef _Iffalse type; };
+```
+
+#### `enable_if`
+
+再来看看`std::enable_if`:
+
+```cpp
+template< bool B, class T = void >
+struct enable_if;
+```
+
+>If `B` is true, **std::enable_if** has a public member typedef `type`, equal to `T`; otherwise, there is no member typedef.
+>
+>This metafunction is a convenient way to leverage [SFINAE](https://en.cppreference.com/w/cpp/language/sfinae) to conditionally remove functions from [overload resolution](https://en.cppreference.com/w/cpp/language/overload_resolution) based on type traits and to provide separate function overloads and specializations for different type traits. **std::enable_if** can be used as an additional function argument (not applicable to operator overloads), as a return type (not applicable to constructors and destructors), or as a class template or function template parameter.
+>
+>The behavior of a program that adds specializations for `enable_if` is undefined.
+
+一个可能的设计：
+
+```cpp
+// 主模板处理B为false的情景
+// 注意这个类模板给了完整的定义，只是内部没有type这一类型
+template<bool B, class T = void>
+struct enable_if {};
+ 
+// 偏特化处理B为true的情景
+// 此时type类型就是模板参数T的类型
+template<class T>
+struct enable_if<true, T> { typedef T type; };
+```
+
+相比`conditional`，`enable_if`的设计更为简单，但使用机制却更加复杂：对于`B`为`false`的情景，`enable_if<false, XXX>::type`是unresolved symbol，但由于SFINAE机制（前提是你得正确使用），并不会导致编译错误，而是在重载集合中把这一候选踢出去。
+
+> SFINAE是模板元编程的基础，想往下看，这个必须得先搞懂。
 
