@@ -2,7 +2,7 @@
 
 **元程序**一词源于英文***metaprogram***。在英语中，***metaprogram***的意思是***a program about a program***，翻译过来就是**程序的程序**。直白地讲，**元程序**就是**用于操纵代码的程序**。
 
-模板元编程主张效率至上，通过花里胡哨的操作与天书一般的代码将运行时的效率压榨至机制，当然与此同时也带来了高昂的编译期成本（在模板元编程中，一些运行期的工作被转移到了编译期）。Modern C++标准库的实现体几乎全部构建在元编程基础之上。所以，要看懂标准库源代码，首先就要懂一点元编程。相比Old C++晦涩难懂的黑魔法实现技巧，从C++11开始，各种语法糖（主要是模板相关）的引入使得元编程变得更加可读也更为容易编写（甚至能做到Old C++做不到的事儿），自此，Modern C++的元编程无论是可读性还是实现成本都有了大幅度的改良。
+模板元编程主张效率至上，通过花里胡哨的操作与天书一般的代码将运行时的效率压榨至极致，当然与此同时也带来了高昂的编译期成本（在模板元编程中，一些运行期的工作被转移到了编译期）。Modern C++标准库的实现体几乎全部构建在元编程基础之上。所以，要看懂标准库源代码，首先就要懂一点元编程。相比Old C++晦涩难懂的黑魔法实现技巧，从C++11开始，各种语法糖（主要是模板相关）的引入使得元编程变得更加可读也更为容易编写（甚至能做到Old C++做不到的事儿），自此，Modern C++的元编程无论是可读性还是实现成本都有了大幅度的改良。
 
 在libstdc++标准库手册中，元编程的一些基础建设被归类到了***Utilities/Metaprogramming***目录下，下面我们对这些基础建设中非常经典且有用的部分进行源码级别的讲解，并对各种高阶实现技巧进行诠释，穿插其中。
 
@@ -472,6 +472,197 @@ struct __is_integral_helper<int> : public true_type {};
 template<>
 struct __is_integral_helper<unsigned int> : public true_type {};
 
-// 略...
+...
 ```
+
+弄懂了`is_integral`，自然也就对`is_floating_point`的实现了然于胸，这里就不做展开了。
+
+#### `is_array`
+
+```cpp
+template< class T >
+struct is_array;
+```
+
+如何判断`T`是个raw array呢？这个东西看起来复杂，实际上判断条件非常简单：
+
+Raw array作为模板参数，无非就两种：定长和不定长（C++的不定长不是真的不定长，只是一种语法糖）。因此，只需要对二者进行特化处理即可。
+
+```cpp
+template<class T>
+struct is_array : std::false_type {};
+ 
+template<class T>
+struct is_array<T[]> : std::true_type {};
+ 
+template<class T, std::size_t N>
+struct is_array<T[N]> : std::true_type {};
+```
+
+> 注意，`std::is_array`判断的是raw array，传`std::array`进去取到的`value`依然是`false`。
+
+#### `is_class`
+
+```cpp
+template< class T >
+struct is_class;
+```
+
+如何判断`T`是否是一个类呢？这个看起来很复杂，实现起来也有些复杂。我们先看看[手册](https://en.cppreference.com/w/cpp/types/is_class)里给出的可能实现方案：
+
+```cpp
+namespace detail {
+// 这里声明了两个函数模板，前者的参数为int型类成员变量指针
+template <class T>
+std::integral_constant<bool, !std::is_union<T>::value> test(int T::*);
+ 
+// 而后者的参数是任意数量、任意类型，...的匹配在编译器眼里是优先级最低的，作为兜底的存在
+template <class>
+std::false_type test(...);
+}
+ 
+template <class T>
+struct is_class : decltype(detail::test<T>(nullptr))
+{};
+```
+
+`is_class`继承`detail::test`返回的类型作为基类（经典元函数调用方式），当我们的`T`是某种类类型时(`struct` or `class`)，基类会优先匹配前者，而如果`T`并不是类类型时，由于`int T::*`这一成员指针无法匹配故触发SFINAE，进而只能退而求其次，选择兜底的后者。如此，`is_class`借助元函数调用（继承）+分支（函数模板重载）就完成了功能判断。
+
+对模板元不熟悉的小伙伴这里肯定会有这样几个疑问：
+
+1. 这不对啊，如果我的`T`中没有定义`int`型成员变量，那不是也匹配不上吗？
+2. 就算我定义了`int`型成员变量，元函数调用中对函数模板的调用为啥传了个`nullptr`啊？而且`test`只做了声明，没有定义体啊，这不会编译报错吗？
+3. 为啥前者还要对返回类型做SFINAE控制，`std::is_union`是干啥的？
+
+首先先解决一下问题3：因为`union`在`C/C++`中是个特殊的存在，如果单纯用类成员指针来判断，`union`其实也是满足条件的，但实际上我们都知道`union`它不是`class`或是`struct`，差别还是非常大的，因此我们要通过`is_union`这一trait把混入其中的`union`通过SFINAE开除，让他只能match后者。
+
+至于问题1和问题2其实是一个问题，这里面有很多细节，首先大家要了解一个点：当编译器看到`decltype`关键字时，是不会对其内的表达式求值的，只需要在编译期确定这个表达式的返回类型而已。因此，`detail::test<T>(nullptr)`不会真正的发起调用（也就不需要实现体），只是会去从可用候选集中找到匹配度最高的那个（所以当`T`是类类型时，就会找到前者）。而另一方面，即使`T`不曾定义`int`型成员变量也无关紧要，因为只要`T`是类类型，那么`int T::*`在语法上就是一个合法的定义，至于你`T`中究竟有没有`int`类型的成员变量，编译器根本不care（在编译期，那是后面阶段的事儿了，但对这一case来说到这里就戛然而止了，没有之后了），所以，你也完全可以不用`int`，换其他任意合法的定义都行。
+
+> 实际上C++11之前，没有强大的`decltype`，都是通过sizeof操作符配合晦涩的`enum`或`sruct`完成这一系列分支选择，C++11之前的模板元编程可以多看看Loki库的实现，以后会单独讲。
+
+> 而在libstdc++实现中，实际上`is_class`的实现只是简单了做了元函数调用：
+>
+> ```cpp
+> template<typename _Tp>
+>     struct is_class
+>     : public integral_constant<bool, __is_class(_Tp)>
+>     { };
+> ```
+>
+> `__is_class`实际上由编译器自己完成(built-in)，不需要实现。
+>
+> 其他诸如`__is_union`、`__is_enum`也都类似。
+
+#### `is_function`
+
+```cpp
+template< class T >
+struct is_function;
+```
+
+> Checks whether `T` is a function type. Types like [std::function](http://en.cppreference.com/w/cpp/utility/functional/function), lambdas, classes with overloaded `operator()` and pointers to functions don't count as function types. Provides the member constant `value` which is equal to true, if `T` is a function type. Otherwise, `value` is equal to false.
+
+注意，如[手册](https://en.cppreference.com/w/cpp/types/is_function)所描述，这里的函数类型不包括泛化的诸如`std::function`,`lambda`,重载了函数调用操作符的`class`或是函数指针（前3个都可以叫函数对象、或是可调用对象，C++98前可以叫functor（侯捷译作仿函数））。想判断泛化函数对象的可以用另一个trait，叫`is_invocable`。
+
+那么如何判断类型`T`为函数类型呢？实际上也不难，只是很麻烦，类似`is_integral`那样，通过特化来枚举一遍就行了，比如：
+
+```cpp
+// primary template
+template<typename>
+struct is_function : std::false_type {};
+
+// specialization for regular functions with one argument
+template<typename Ret, typename Arg>
+struct is_function<Ret(Arg)> : std::true_type {};
+
+// specialization for regular functions with two argument
+template<typename Ret, typename Arg1, typename Arg2>
+struct is_function<Ret(Arg1, Arg2)> : std::true_type {};
+
+...
+```
+
+嗯，我们发现了个问题，不像`is_integral`是固定的单一参数，函数类型的参数可是无穷无尽的，没法一一枚举。不过好在C++11之后，模板语法有了核弹级加强——可变模板参数(variadic template parameters)，因此，上述的写法稍作修改：
+
+```cpp
+// primary template
+template<typename>
+struct is_function : std::false_type {};
+
+// specialization for regular functions
+template<typename Ret, typename... Args>
+struct is_function<Ret(Args...)> : std::true_type {};
+```
+
+如此，通过可变模板参数就能让所有的regular function都精准匹配到这一特化模板了。
+
+> 实际上，C++11之前，很多库诸如chromium base、Loki等对不定参数的处理都是通过上面的笨方法做了一堆定义，然后参数数量会有个上限比如50。
+
+除了regular function，我们还得处理从C那继承来的legacy：variadic function。
+
+> C里面的那些个printf, sprintf啥的，都是variadic function，这些个legacy在C++里恶心至极，每次折腾function都得考虑兼容它们。
+
+```cpp
+// specialization for variadic functions such as std::printf
+template<class Ret, class... Args>
+struct is_function<Ret(Args......)> : std::true_type {};
+```
+
+这个`......`就很魔性，前半个`...`是可变模板参数的语法，后半个`...`是C式变参。
+
+对于函数类型来说，不仅要处理本体，因为类成员函数的关系，还得对CV限定符、ref限定符的版本进行特化处理（c++17之后甚至还要修正noexcept）以得以匹配：
+
+```cpp
+// specialization for function types that have cv-qualifiers
+template<class Ret, class... Args>
+struct is_function<Ret(Args...) const> : std::true_type {};
+template<class Ret, class... Args>
+struct is_function<Ret(Args...) volatile> : std::true_type {};
+template<class Ret, class... Args>
+struct is_function<Ret(Args...) const volatile> : std::true_type {};
+template<class Ret, class... Args>
+struct is_function<Ret(Args......) const> : std::true_type {};
+template<class Ret, class... Args>
+struct is_function<Ret(Args......) volatile> : std::true_type {};
+template<class Ret, class... Args>
+struct is_function<Ret(Args......) const volatile> : std::true_type {};
+
+// specialization for function types that have ref-qualifiers
+template<class Ret, class... Args>
+struct is_function<Ret(Args...) &> : std::true_type {};
+template<class Ret, class... Args>
+struct is_function<Ret(Args...) const &> : std::true_type {};
+template<class Ret, class... Args>
+struct is_function<Ret(Args...) volatile &> : std::true_type {};
+template<class Ret, class... Args>
+struct is_function<Ret(Args...) const volatile &> : std::true_type {};
+template<class Ret, class... Args>
+struct is_function<Ret(Args......) &> : std::true_type {};
+template<class Ret, class... Args>
+struct is_function<Ret(Args......) const &> : std::true_type {};
+template<class Ret, class... Args>
+struct is_function<Ret(Args......) volatile &> : std::true_type {};
+template<class Ret, class... Args>
+struct is_function<Ret(Args......) const volatile &> : std::true_type {};
+template<class Ret, class... Args>
+struct is_function<Ret(Args...) &&> : std::true_type {};
+template<class Ret, class... Args>
+struct is_function<Ret(Args...) const &&> : std::true_type {};
+template<class Ret, class... Args>
+struct is_function<Ret(Args...) volatile &&> : std::true_type {};
+template<class Ret, class... Args>
+struct is_function<Ret(Args...) const volatile &&> : std::true_type {};
+template<class Ret, class... Args>
+struct is_function<Ret(Args......) &&> : std::true_type {};
+template<class Ret, class... Args>
+struct is_function<Ret(Args......) const &&> : std::true_type {};
+template<class Ret, class... Args>
+struct is_function<Ret(Args......) volatile &&> : std::true_type {};
+template<class Ret, class... Args>
+struct is_function<Ret(Args......) const volatile &&> : std::true_type {};
+```
+
+> 类成员函数的限定符有4种，分别是const、volatile、&和&&并且可以组合使用，所以特化就整了个排列组合。。。
+
+当然，上述的实现体看起来就非常笨重，实际上有简化的写法，我们看看libstdc++的实现：
 
