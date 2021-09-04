@@ -727,3 +727,49 @@ template <class _Tp> struct is_rvalue_reference<_Tp&&> : public true_type {};
 
 #### `is_pointer`
 
+```cpp
+template< class T >
+struct is_pointer;
+```
+
+> Checks whether `T` is a [pointer to object](https://en.cppreference.com/w/cpp/language/pointer) or a pointer to function (but not a pointer to member/member function) or a cv-qualified version thereof. Provides the member constant `value` which is equal to true, if `T` is a object/function pointer type. Otherwise, `value` is equal to false.
+
+如[手册](https://en.cppreference.com/w/cpp/types/is_pointer)描述，这个trait判断的是对象或函数的指针，这不包括类成员函数/变量指针（实际上这个东西根本就不是指针，只是个偏移量）。
+
+实现起来也很简单，也是按特化处理即可。
+
+```cpp
+template<typename>
+    struct __is_pointer_helper
+    : public false_type { };
+
+  template<typename _Tp>
+    struct __is_pointer_helper<_Tp*>
+    : public true_type { };
+
+  template<typename _Tp>
+    struct is_pointer
+    : public __is_pointer_helper<__remove_cv_t<_Tp>>::type
+    { };
+```
+
+注意这里通过`__is_pointer_helper`做了元函数转发，转发前通过内部的trait`__remove_cv_t`对`_Tp`的CV进行了清洗，然后就是经典的特化模板匹配指针类型，主模板处理其他情景。
+
+可能有的小伙伴会问，这里为啥要主动去消除掉CV呢？我们编写`is_reference`的时候可是没有做类似的事儿啊。指针这个东西在C++里是很复杂的，它和引用不同，引用本身是没有所谓的CV限定的，我们平时用的比如`const int&`常量左值引用，这个引用的作用实际上是对类型`int`生效。举个例子，比如在应用于`is_lvalue_reference`时，特化模板在匹配时模板参数`_Tp`被推导成了`const int`，而主模板则将`_Tp`匹配成`const int&`（由于优先级问题它不会被选择实例化）。
+
+然而，对于指针来说，它本身是可以有CV修饰的，这个CV修饰限定的是指针本身，而不是指向的类型。我们以前学const时，经常会弄混这样几个东西：
+
+```cpp
+const int *p1;	// p1指向的类型是const int
+int const *p2;	// p2指向的类型也是const int
+int* const p3;	// p3指向的类型是int，本身是const
+```
+
+`p1`和`p2`实际上是同一种类型，指针指向的类型是`const int`，即指向的对象值本身不能修改，但是`p3`却不同，它指向的是个`int`对象，对象值本身可以修改，不能修改的是`p3`所指的内容，即一旦指定就不能再换。
+
+当然，你完全还可以写`const int * const p4;`
+
+在C++语言中，我们将修饰指针的`const`称作**top const**，修饰所指对象类型的称作**bottom const**。
+
+因此，如果不提前洗掉CV，那么仅仅写一个`is_pointer<_Tp*>`的特化体，是不够的，它无法匹配`T *const`（再加上`volatile`的排列组合）。
+
