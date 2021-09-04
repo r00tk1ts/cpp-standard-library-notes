@@ -662,7 +662,68 @@ template<class Ret, class... Args>
 struct is_function<Ret(Args......) const volatile &&> : std::true_type {};
 ```
 
-> 类成员函数的限定符有4种，分别是const、volatile、&和&&并且可以组合使用，所以特化就整了个排列组合。。。
+> 类成员函数的限定符有4种，分别是const、volatile、&和&&并且可以组合使用，所以特化就整了个排列组合。
 
 当然，上述的实现体看起来就非常笨重，实际上有简化的写法，我们看看libstdc++的实现：
+
+```cpp
+  template<typename _Tp>
+    struct is_function
+    : public __bool_constant<!is_const<const _Tp>::value> { };
+
+  template<typename _Tp>
+    struct is_function<_Tp&>
+    : public false_type { };
+
+  template<typename _Tp>
+    struct is_function<_Tp&&>
+    : public false_type { };
+```
+
+为什么这里的实现这么简单呢，实际上虽然类成员函数可以有CV和ref限定符，但实际上这里对函数的限定符和平时我们对诸如`int`类型做限定：`const int`,`int&`,`int&&`的实际意义是完全不同的，前者实际上并非是对top做adding cv/ref-qualification，而是对类成员函数内部隐藏的对象做限制(比如`const`实际上作用的是隐含的`this`)。
+
+那么话又说回来了，在C++语言中，只有function type和ref这两种物件不能拥有CV限定，因此，在主模板中，`is_const<const _Tp>::value`如果编译期计算的结果是`false`，就意味着top const限定对`_Tp`不起作用，也就意味着`_Tp`要么是引用类型，要么是函数类型，因此，我们只需要把引用类型踢出去就行了，如此才额外定义了两个特化模板，将左值引用和右值引用都通过优先级更高的特化模板筛了出去。
+
+实际上，libc++的实现更为简单，关于ref类型的鉴别，完全可以复用另一个trait:
+
+```cpp
+template <class _Tp> 
+  struct is_function
+    : public _BoolConstant<!(is_reference<_Tp>::value || is_const<const _Tp>::value)> {};
+```
+
+看到这里，这个`_BoolConstant`你应该完全知道是个啥东西了，而`is_reference`这一trait要如何实现，你也已经了然于胸了。
+
+#### `is_reference`
+
+```cpp
+template< class T >
+struct is_reference;
+```
+
+嗯，其实怎么实现，在`is_function`的最后已经给出了。我们姑且看看libc++怎么实现的：
+
+```cpp
+template <class _Tp> struct is_reference        : public false_type {};
+template <class _Tp> struct is_reference<_Tp&>  : public true_type {};
+template <class _Tp> struct is_reference<_Tp&&> : public true_type {};
+```
+
+如出一辙。
+
+> libstdc++的实现用了or trait，就不用它做例子了。
+
+##### `is_lvalue_reference`,`is_rvalue_reference`
+
+有时候还是需要区分左值引用和右值引用的，单单是`is_reference`粒度是不够的，那么怎么实现呢？这个其实就更显然了，只需要把`is_reference`阉割一下，只处理你关心的那个特化就行了：
+
+```cpp
+template <class _Tp> struct is_lvalue_reference       : public false_type {};
+template <class _Tp> struct is_lvalue_reference<_Tp&> : public true_type {};
+
+template <class _Tp> struct is_rvalue_reference        : public false_type {};
+template <class _Tp> struct is_rvalue_reference<_Tp&&> : public true_type {};
+```
+
+#### `is_pointer`
 
