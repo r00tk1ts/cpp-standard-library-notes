@@ -773,3 +773,135 @@ int* const p3;	// p3指向的类型是int，本身是const
 
 因此，如果不提前洗掉CV，那么仅仅写一个`is_pointer<_Tp*>`的特化体，是不够的，它无法匹配`T *const`（再加上`volatile`的排列组合）。
 
+#### `is_member_pointer`
+
+C++里对有两个独特的类型，它们虽然名叫指针，但却和指针有本质的不同，那就是成员对象指针和成员函数指针。
+
+那么这二者怎么判断呢？回顾一下`is_class` trait实现，实际上就是对类成员变量指针做了特化的判断，如此，只需要如法炮制即可：
+
+```cpp
+template< class T >
+struct is_member_pointer_helper : std::false_type {};
+ 
+template< class T, class U >
+struct is_member_pointer_helper<T U::*> : std::true_type {};
+ 
+template< class T >
+struct is_member_pointer : 
+    is_member_pointer_helper<typename std::remove_cv<T>::type> {};
+```
+
+特化模板中的`T`可以被推导成类成员变量类型或是类成员函数类型。libstdc++的实现与此完全一致。
+
+> 这里需要`remove_cv`的原因与`is_pointer`相同。
+
+##### `is_member_object_pointer`,`is_member_function_pointer`
+
+那么如何区分到底是类成员变量指针还是类成员函数指针呢？`is_member_pointer`并无能力区分二者。
+
+标准库进一步定义了二者：
+
+```cpp
+template< class T >
+struct is_member_object_pointer;
+
+template< class T >
+struct is_member_function_pointer;
+```
+
+这两个东西怎么判断呢？其实也很简单，我们先考虑成员函数指针，在`is_member_pointer`的特化模板中，`T`会被推导成某种函数类型，那么我们只需要判断一下这个`T`是不是函数类型即可，而这一功能，我们已经有了`is_function`来实现：
+
+```cpp
+template< class T >
+struct is_member_function_pointer_helper : std::false_type {};
+ 
+template< class T, class U>
+struct is_member_function_pointer_helper<T U::*> : std::is_function<T> {};
+ 
+template< class T >
+struct is_member_function_pointer 
+  : is_member_function_pointer_helper< typename std::remove_cv<T>::type > {};
+```
+
+`is_member_function_pointer_helper`的特化模板中，利用`is_function`做了函数类型的type trait。
+
+那么类成员变量指针怎么判断呢，变量的类型可太多了！实际上，你直接用not逻辑就行：
+
+```cpp
+template<class T>
+struct is_member_object_pointer : std::integral_constant<
+                                      bool,
+                                      std::is_member_pointer<T>::value &&
+                                      !std::is_member_function_pointer<T>::value
+                                  > {};
+```
+
+> C++17封装了逻辑与或非的trait，用于简化像上述的元函数调用，libstdc++长成这样：
+>
+> ```cpp
+>   template<typename>
+>     struct __is_member_object_pointer_helper
+>     : public false_type { };
+> 
+>   template<typename _Tp, typename _Cp>
+>     struct __is_member_object_pointer_helper<_Tp _Cp::*>
+>     : public __not_<is_function<_Tp>>::type { };
+> 
+>   /// is_member_object_pointer
+>   template<typename _Tp>
+>     struct is_member_object_pointer
+>     : public __is_member_object_pointer_helper<__remove_cv_t<_Tp>>::type
+>     { };
+> ```
+
+#### `is_void`
+
+现在，C++语法中几乎所有的类型我们都有了trait了，但仔细想想，其实还有个最特别的`void`类型没处理：
+
+```cpp
+template< class T >
+struct is_void;
+```
+
+思考一下，这个奇怪的类型要怎么判定呢？
+
+其实也很简单，你只需要对`void`本身做特化就行了，因为`void`就是`void`，它不能是别的。
+
+```cpp
+template <typename T>
+struct is_void : public false_type {};
+
+template <>
+struct is_void<void> : public true_type {};
+```
+
+当然了，我们可以通过元函数做简化，这也是libstdc++和libcxx的实现方法：
+
+```cpp
+template< class T >
+struct is_void : std::is_same<void, typename std::remove_cv<T>::type> {};
+```
+
+这里还要注意到，元函数转发时还做了`remove_cv`，估计大多数同学都是懵逼的，都`void`类型了，咋还有CV限定呢？实际上C++语法上是支持对`void`做CV限定的，如果这里不做`remove_cv`、直接用我们上面给出的特化模板，那么实际上像是`is_void<const volatile void>`这种是无法匹配到特化模板的，这也不符合预期。
+
+> 尽管`void`的CV限定没啥作用，但是语法上支持它主要是为了兼容，这样就可以一视同仁的做CV限定（比如应用到返回类型）。
+
+#### `is_null_pointer`
+
+C++14还引入了`is_null_pointer`来判断C++11中引入的一种特殊类型：`nullptr_t`。`std::nullptr_t`呢实际上是`typedef decltype(nullptr) nullptr_t;`，也就是一个特别的值：`nullptr`的类型定义（这玩意拯救了NULL与0傻傻分不清的窘境）。那么有了`nullptr_t`，`is_null_pointer`的判定也就很简单了：
+
+```cpp
+template< class T >
+struct is_null_pointer : std::is_same<std::nullptr_t, std::remove_cv_t<T>> {};
+```
+
+---
+
+到此，C++里各种类型的trait判断，我们都已了然。接下来，我们看看真正的properties trait。
+
+#### `is_const`
+
+
+
+
+
