@@ -486,7 +486,7 @@ struct is_array;
 
 如何判断`T`是个raw array呢？这个东西看起来复杂，实际上判断条件非常简单：
 
-Raw array作为模板参数，无非就两种：定长和不定长（C++的不定长不是真的不定长，只是一种语法糖）。因此，只需要对二者进行特化处理即可。
+Raw array作为模板参数，无非就两种：有界和无界（C++的无界不是真的无界，只是一种语法糖）。因此，只需要对二者进行特化处理即可。
 
 ```cpp
 template<class T>
@@ -500,6 +500,24 @@ struct is_array<T[N]> : std::true_type {};
 ```
 
 > 注意，`std::is_array`判断的是raw array，传`std::array`进去取到的`value`依然是`false`。
+
+##### `is_bounded_array`,`is_unbounded_array`
+
+怎么区分呢？很简单，只需要特化自己的那一份就行了：
+
+```cpp
+template<class T>
+struct is_bounded_array: std::false_type {};
+ 
+template<class T, std::size_t N>
+struct is_bounded_array<T[N]> : std::true_type {};
+
+template<class T>
+struct is_unbounded_array: std::false_type {};
+ 
+template<class T>
+struct is_unbounded_array<T[]> : std::true_type {};
+```
 
 #### `is_class`
 
@@ -899,9 +917,159 @@ struct is_null_pointer : std::is_same<std::nullptr_t, std::remove_cv_t<T>> {};
 
 到此，C++里各种类型的trait判断，我们都已了然。接下来，我们看看真正的properties trait。
 
-#### `is_const`
+#### `is_const`,`is_volatile`
 
+CV限定的判断亦可以通过特化分支的形式实现：
 
+```cpp
+template <class _Tp> struct is_const            : public false_type {};
+template <class _Tp> struct is_const<_Tp const> : public true_type {};
 
+template <class _Tp> struct is_volatile               : public false_type {};
+template <class _Tp> struct is_volatile<_Tp volatile> : public true_type {};
+```
 
+上面给出了libcxx的实现版本。
+
+#### `is_signed`,`is_unsigned`
+
+如何判断数值型类型的符号呢？只需要用0和-1进行比较即可：
+
+```cpp
+template<typename _Tp,bool = is_arithmetic<_Tp>::value>
+struct __is_signed_helper : public false_type {};
+
+template<typename _Tp>
+struct __is_signed_helper<_Tp, true> : public integral_constant<bool, _Tp(-1) < _Tp(0)> {};
+  
+template<typename _Tp>
+struct is_signed : public __is_signed_helper<_Tp>::type {};
+```
+
+对于`is_unsigned`，只需要把-1和0的比较倒过来就行了。
+
+> 实际上这是手册给出的一种实现，libstdc++和libcxx的实现各有出入。
+
+#### `is_empty`,`is_polymorphic`
+
+这几个东西实现起来有些难度，首先看`is_empty`：
+
+```cpp
+template< class T >
+struct is_empty;
+```
+
+> If `T` is an empty type (that is, a non-union class type with no non-static data members other than bit-fields of size 0, no virtual functions, no virtual base classes, and no non-empty base classes), provides the member constant `value` equal to true. For any other type, `value` is false.
+
+这里的定义已经给了hint，只需要利用特化模板来筛选出没有非静态成员变量的类类型即可，那么话虽如此，要怎么去判断呢？我们姑且先看看libcxx的实现：
+
+```cpp
+template <class _Tp>
+struct __is_empty1 : public _Tp
+{
+    double __lx;
+};
+
+struct __is_empty2
+{
+    double __lx;
+};
+
+template <class _Tp, bool = is_class<_Tp>::value>
+struct __libcpp_empty : public integral_constant<bool, sizeof(__is_empty1<_Tp>) == sizeof(__is_empty2)> {};
+
+template <class _Tp> struct __libcpp_empty<_Tp, false> : public false_type {};
+
+template <class _Tp> struct is_empty : public __libcpp_empty<_Tp> {};
+```
+
+如果你是第一次看到，一定会觉着非常惊艳，实际上，通过`sizeof`完成的骚操作在早期C++标准库中屡见不鲜，这里是它的一个经典用法。它背后的意义是这样的：如果某个类没有非静态成员变量，那么对该类的继承并不会影响对象的尺寸，这里通过对比`__is_empty1<_Tp>`和`__is_empty2`的尺寸来判断`_Tp`是否为“空类”，当然，`_Tp`前提得是一个`class`才行，这一点通过元函数调用的第二个参数中`is_class` trait做了保证（对不是类类型的`_Tp`来说，触发SFINAE）。
+
+> 其实这种实现体是有点问题的，因为C++11后class可以有final限定，那么这里的继承大法就时效了。
+>
+> 现代C++都会提供compiler hooks来内部闭环处理这些trait，像`is_final`,`is_abstract`等都是如此。它们中的一些，你或许能想出某种trick来实现，但另一些是语法层面死活做不到的，只能借助编译器的hooks。
+>
+> [[Which  cannot be implemented without compiler hooks?](https://stackoverflow.com/questions/20181702/which-type-traits-cannot-be-implemented-without-compiler-hooks)](https://stackoverflow.com/questions/20181702/which-type-traits-cannot-be-implemented-without-compiler-hooks)
+
+`is_polymorphic`虽然也有compiler hook支持，但是它可以通过某种技巧来实现：
+
+```cpp
+namespace detail {
+ 
+template <class T>
+std::true_type detect_is_polymorphic(
+    decltype(dynamic_cast<const volatile void*>(static_cast<T*>(nullptr)))
+);
+template <class T>
+std::false_type detect_is_polymorphic(...);
+ 
+} // namespace detail
+ 
+template <class T>
+struct is_polymorphic : decltype(detail::detect_is_polymorphic<T>(nullptr)) {};
+```
+
+这里是利用了`dynamic_cast`只能对拥有虚函数（实际上是虚表）的多态类型使用的trick，而转成`void*`是一种合法的转换，另一方面，转成哪种类型都无所谓，只需要能语法通过即可，这样多态类型就不会因SFINAE而干掉。
+
+### Type modifications
+
+除了能萃取出型别信息以外，我们还可以对型别进行增删操作，这一系列的操作在手册中被归类为`type modifications`。
+
+#### `remove_cv`,`remove_const`,`remove_volatile`,`add_cv`,`add_const`,`add_volatile`
+
+```cpp
+template< class T >
+struct remove_cv;
+
+template< class T >
+struct remove_const;
+	
+template< class T >
+struct remove_volatile;
+```
+
+> Provides the member typedef `type` which is the same as `T`, except that its topmost cv-qualifiers are removed.
+>
+> \1) removes the topmost const, or the topmost volatile, or both, if present.
+>
+> \2) removes the topmost const
+>
+> \3) removes the topmost volatile
+
+老办法，直接特化就行了：
+
+```cpp
+template< class T > struct remove_cv                   { typedef T type; };
+template< class T > struct remove_cv<const T>          { typedef T type; };
+template< class T > struct remove_cv<volatile T>       { typedef T type; };
+template< class T > struct remove_cv<const volatile T> { typedef T type; };
+ 
+template< class T > struct remove_const                { typedef T type; };
+template< class T > struct remove_const<const T>       { typedef T type; };
+ 
+template< class T > struct remove_volatile             { typedef T type; };
+template< class T > struct remove_volatile<volatile T> { typedef T type; };
+```
+
+当然了，`remove_cv`也可以在`remove_const`基础上再套一层`remove_volatile``来实现，反之亦然。
+
+你掌握了`remove_cv`，自然也就掌握了`add_cv`:
+
+```cpp
+template<class T> struct add_cv { typedef const volatile T type; };
+ 
+template<class T> struct add_const { typedef const T type; };
+ 
+template<class T> struct add_volatile { typedef volatile T type; };
+```
+
+#### `remove_reference`,`add_lvalue_reference`,`add_rvalue_reference`
+
+删除引用无需区分是哪种，同样通过特化来实现：
+
+```cpp
+template< class T > struct remove_reference      {typedef T type;};
+template< class T > struct remove_reference<T&>  {typedef T type;};
+template< class T > struct remove_reference<T&&> {typedef T type;};
+```
 
