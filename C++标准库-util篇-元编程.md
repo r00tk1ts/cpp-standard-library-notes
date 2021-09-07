@@ -1065,11 +1065,245 @@ template<class T> struct add_volatile { typedef volatile T type; };
 
 #### `remove_reference`,`add_lvalue_reference`,`add_rvalue_reference`
 
-删除引用无需区分是哪种，同样通过特化来实现：
+删除引用同样通过特化来实现：
 
 ```cpp
 template< class T > struct remove_reference      {typedef T type;};
 template< class T > struct remove_reference<T&>  {typedef T type;};
 template< class T > struct remove_reference<T&&> {typedef T type;};
+```
+
+增加引用则略微有些麻烦，一方面左值引用和右值引用要区分开来，另一方面我们知道`void`类型是无法用ref修饰，这会导致一个编译错误。
+
+[手册](https://en.cppreference.com/w/cpp/types/add_reference)里给了一个比较复杂的实现：
+
+```cpp
+namespace detail {
+ 
+// 这个东西在模板元中非常有用，它定义type类型为模板参数T本身
+// 在使用函数模板做分支时，可以用这个携带type,value这些属性
+template <class T>
+struct type_identity { using type = T; }; // or use std::type_identity (since C++20)
+ 
+// 对void的&限定会触发SFINAE，故void&只能匹配后者，而后者::type为T，前者为T&
+// 这里的参数列表是dummy占位性质，只是为了获得更高的优先度，无实意，这一技巧在C++模板元中被经常使用
+template <class T> // Note that `cv void&` is a substitution failure
+auto try_add_lvalue_reference(int) -> type_identity<T&>;
+template <class T> // Handle T = cv void case
+auto try_add_lvalue_reference(...) -> type_identity<T>;
+ 
+// 右值引用如法炮制
+template <class T>
+auto try_add_rvalue_reference(int) -> type_identity<T&&>;
+template <class T>
+auto try_add_rvalue_reference(...) -> type_identity<T>;
+ 
+} // namespace detail
+ 
+// 这里继承元函数（这里用的是函数模板）返回类型
+template <class T>
+struct add_lvalue_reference : decltype(detail::try_add_lvalue_reference<T>(0)) {};
+ 
+template <class T>
+struct add_rvalue_reference : decltype(detail::try_add_rvalue_reference<T>(0)) {};
+```
+
+当然，通过类模板来实现元函数的版本会更好理解，诸如libstdc++的实现：
+
+```cpp
+template<typename _Tp, bool = __is_referenceable<_Tp>::value>
+    struct __add_lvalue_reference_helper
+    { typedef _Tp   type; };
+
+  template<typename _Tp>
+    struct __add_lvalue_reference_helper<_Tp, true>
+    { typedef _Tp&   type; };
+
+  /// add_lvalue_reference
+  template<typename _Tp>
+    struct add_lvalue_reference
+    : public __add_lvalue_reference_helper<_Tp>
+    { };
+```
+
+`__add_lvalue_reference_helper`利用默认模板实参`__is_referenceable`做了类型`_Tp`是否可以被引用限定的判断，对于不符合的情景则命中主模板，将`_Tp`定义为`type`，反之则在特化模板中定义`_Tp&`为`type`。
+
+至于`__is_referenceable`怎么实现呢：
+
+```cpp
+// C++11实际上已经有了对外曝光的void_t了，这东西的作用就是不管你塞啥东西，塞多少东西进来，我都视为void型
+template<typename...> using __void_t = void;
+
+template<typename _Tp, typename = void>
+    struct __is_referenceable
+    : public false_type
+    { };
+
+// 对于_Tp&语法上不合法的情景(说的就是你，void)，会触发SFINAE
+// 而一旦合法，就都会通通优先匹配这个偏特化模板，而第二个模板参数的作用就发挥完了
+template<typename _Tp>
+    struct __is_referenceable<_Tp, __void_t<_Tp&>>
+    : public true_type
+    { };
+```
+
+还是熟悉的配方。
+
+另外，还有一点要注意，不管是`add_lvalue_reference`还是`add_rvalue_reference`，它们最终的结果依然是要符合引用折叠规则的，这是C++11的必备基础，这里就不再赘述。
+
+#### `remove_pointer`,`add_pointer`
+
+```cpp
+template< class T >
+struct remove_pointer;
+
+template< class T >
+struct add_pointer;
+```
+
+> Provides the member typedef `type` which is the type pointed to by `T`, or, if `T` is not a pointer, then `type` is the same as `T`.
+
+>If `T` is a reference type, then provides the member typedef `type` which is a pointer to the referred type. Otherwise, if T names an object type, a function type that is not cv- or ref-qualified, or a (possibly cv-qualified) void type, provides the member typedef `type` which is the type `T*`. Otherwise (if T is a cv- or ref-qualified function type), provides the member typedef `type` which is the type `T`.
+
+相信你的心里已经有了答案：
+
+```cpp
+template< class T > struct remove_pointer                    {typedef T type;};
+template< class T > struct remove_pointer<T*>                {typedef T type;};
+template< class T > struct remove_pointer<T* const>          {typedef T type;};
+template< class T > struct remove_pointer<T* volatile>       {typedef T type;};
+template< class T > struct remove_pointer<T* const volatile> {typedef T type;};
+```
+
+当然，如果中间再经过一层`remove_cv`会更简单，参考上文`is_pointer`的实现，这里就不展开了。
+
+而`add_pointer`要额外考虑移除ref的影响：
+
+```cpp
+namespace detail {
+ 
+template <class T>
+struct type_identity { using type = T; }; // or use std::type_identity (since C++20)
+ 
+// 这里要洗掉ref限定，不然会导致有ref限定的情景触发SFINAE，另一方面也是为了完成is_pointer的语义
+template <class T>
+auto try_add_pointer(int) -> type_identity<typename std::remove_reference<T>::type*>;
+template <class T>
+auto try_add_pointer(...) -> type_identity<T>;
+ 
+} // namespace detail
+ 
+template <class T>
+struct add_pointer : decltype(detail::try_add_pointer<T>(0)) {};
+```
+
+---
+
+### 补充篇-`common_type`
+
+到此，一些常用的简单的type trait实现我们就都学会了。可能有些小伙伴觉着自己已经掌握了模板元编程，嗯，那就让我们最后看个硬核的`common_type`：
+
+```cpp
+template< class... T >
+struct common_type;
+```
+
+> Determines the common type among all types `T...`, that is the type all `T...` can be implicitly converted to. If such a type exists (as determined according to the rules below), the member `type` names that type. Otherwise, there is no member `type`.
+>
+> - If sizeof...(T) is zero, there is no member `type`.
+> - If sizeof...(T) is one (i.e., `T...` contains only one type `T0`), the member `type` names the same type as std::common_type<T0, T0>::type if it exists; otherwise there is no member `type`.
+> - If sizeof...(T) is two (i.e., `T...` contains exactly two types `T1` and `T2`),
+>   - If applying [std::decay](https://en.cppreference.com/w/cpp/types/decay) to at least one of `T1` and `T2` produces a different type, the member `type` names the same type as std::common_type<[std::decay](http://en.cppreference.com/w/cpp/types/decay)<T1>::type, [std::decay](http://en.cppreference.com/w/cpp/types/decay)<T2>::type>::type, if it exists; if not, there is no member `type`.
+>   - Otherwise, if there is a user specialization for std::common_type<T1, T2>, that specialization is used;
+>   - Otherwise, if [std::decay](http://en.cppreference.com/w/cpp/types/decay)<decltype(false ? [std::declval](http://en.cppreference.com/w/cpp/utility/declval)<T1>() : [std::declval](http://en.cppreference.com/w/cpp/utility/declval)<T2>())>::type is a valid type, the member `type` denotes that type;
+>   - Otherwise, if [std::decay](http://en.cppreference.com/w/cpp/types/decay)<decltype(false ? [std::declval](http://en.cppreference.com/w/cpp/utility/declval)<CR1>() : [std::declval](http://en.cppreference.com/w/cpp/utility/declval)<CR2>())>::type is a valid type, where `CR1` and `CR2` are const [std::remove_reference_t](http://en.cppreference.com/w/cpp/types/remove_reference)<T1>& and const [std::remove_reference_t](http://en.cppreference.com/w/cpp/types/remove_reference)<T2>& respectively, the member `type` denotes that type;
+>   - Otherwise, there is no member `type`.
+> - If sizeof...(T) is greater than two (i.e., `T...` consists of the types `T1, T2, R...`), then if std::common_type<T1, T2>::type exists, the member `type` denotes std::common_type<typename std::common_type<T1, T2>::type, R...>::type if such a type exists. In all other cases, there is no member `type`.
+>
+> The types in the parameter pack `T` shall each be a complete type, (possibly cv-qualified) void, or an array of unknown bound. Otherwise, the behavior is undefined.
+
+这个说明首先就很硬核，但其实除了正文的描述，下面都是对corner case的约束与标准化，本身并不难理解。
+
+这个东西实现起来确实比较复杂，熟悉模板元的同学都知道，模板元可以实现分支和循环，前者可以通过函数模板重载或类模板特化来实现，而后者则需要通过类模板递归来实现。在C++11之前，类模板想处理不定长参数是非常困难的，他需要自己定义非常复杂的typelist来实现（最早是在《C++设计新思维》中Loki库的实现得以发扬光大），但使用起来需要配合宏定义来简化。而C++11之后语言支持了可变参数模板，这大大简化了递归的难度，我们只需要通过简单的类模板特化来处理终止条件就足够了。
+
+我们看一下[手册](https://en.cppreference.com/w/cpp/types/common_type)里给出的实现版本：
+
+```cpp
+// 因为下面多个特化体，主模板实际上只能匹配模板参数为0个的场景，按照语义约定，此时无需定义type类型
+// primary template (used for zero types)
+template<class...>
+struct common_type {};
+ 
+// 这是一种终止条件，但实际上它委派给了two type的实现体（真正的终止条件），此时T1和T2是同种类型
+//////// one type
+template <class T>
+struct common_type<T> : common_type<T, T> {};
+ 
+namespace detail {
+template<class...>
+using void_t = void;
+ 
+// decltype中的三目运算符在编译期实际上根本不会进行计算，
+// 换句话说，这里写false还是true都无所谓，因为它没有意义，
+// 编译期的三目运算符只是为了让编译期利用二者来推导出一种公共类型而已。
+template<class T1, class T2>
+using conditional_result_t = decltype(false ? std::declval<T1>() : std::declval<T2>());
+ 
+// 处理T1和T2无公共类型的情况
+template<class, class, class = void>
+struct decay_conditional_result {};
+
+// T1和T2有公共类型（decltype(?:)可以推导成功）
+template<class T1, class T2>
+struct decay_conditional_result<T1, T2, void_t<conditional_result_t<T1, T2>>>
+    : std::decay<conditional_result_t<T1, T2>> {};
+ 
+// T1和T2无公共类型，继承的是decay_conditional_result主模板，整个类就是空壳子（没有type的定义）
+template<class T1, class T2, class = void>
+struct common_type_2_impl : decay_conditional_result<const T1&, const T2&> {};
+ 
+// C++11 implementation:
+// template<class, class, class = void>
+// struct common_type_2_impl {};
+// T1和T2有公共类型，继承decay_conditional_result特化模板，进一步继承三目运算符推导出来的类型
+// 而最终通过std::decay定义出type，也就是推导出来的类型，最终为common_type所用(真正定义的type)
+template<class T1, class T2>
+struct common_type_2_impl<T1, T2, void_t<conditional_result_t<T1, T2>>>
+    : decay_conditional_result<T1, T2> {};
+}
+ 
+// 这个才是灵魂所在，真正的递归终止条件
+// 到这里就说明只需要判断仅剩的两个参数是否有公共类型了
+//////// two types
+// 如果T1和T2本身就是退化后的类型，那么type就是detail::common_type_2_impl<T1, T2>
+// 否则要先退化再递归调用自己一次
+template<class T1, class T2>
+struct common_type<T1, T2> 
+    : std::conditional<std::is_same<T1, typename std::decay<T1>::type>::value &&
+                       std::is_same<T2, typename std::decay<T2>::type>::value,
+                       detail::common_type_2_impl<T1, T2>,
+                       common_type<typename std::decay<T2>::type,
+                                   typename std::decay<T2>::type>>::type {};
+ 
+//////// 3+ types
+namespace detail {
+// AlwaysVoid只是为了占位，辅助特化体的SFINAE判定
+// 如果特化体触发了SFINAE，就说明T1和T2之间根本没有可兼容的公共类型，后面的...R就不用判断了，递归结束
+template<class AlwaysVoid, class T1, class T2, class...R>
+struct common_type_multi_impl {};
+  
+// 特化体中对第一个参数做了common_type<T1,T2>的元函数调用
+// 也就是说，如果common_type<T1,T2>::type类型不存在，就会因为SFINAE而不得不匹配主模板
+// 而如果存在的话，我们就继续递归、通过继承来递归调用common_type，此时参数列表就变成了
+// "typename common_type<T1, T2>::type, R..."，相当于每一层都合并前两个参数
+template<class T1, class T2, class...R>
+struct common_type_multi_impl<void_t<typename common_type<T1, T2>::type>, T1, T2, R...>
+    : common_type<typename common_type<T1, T2>::type, R...> {};
+}
+ 
+// 三种以上的就递归处理
+template<class T1, class T2, class... R>
+struct common_type<T1, T2, R...>
+    : detail::common_type_multi_impl<void, T1, T2, R...> {};
 ```
 
